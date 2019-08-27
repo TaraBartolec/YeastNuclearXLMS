@@ -1,0 +1,369 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Cmd+Shift+Enter*. 
+
+
+```{r}
+library(tidyverse)
+library(ggplot2)
+```
+
+```{r}
+Rep1 <- read.table("23102018_Nuc_F1840_PD23_S40D4_CSMs.txt", stringsAsFactors = FALSE, header = TRUE, sep = "\t")
+Rep2 <- read.table("01052019_Nuc_F1840_PD23_S40D4_CSMs.txt", stringsAsFactors = FALSE, header = TRUE, sep = "\t")
+Rep1ReporterPeaks <- read.table("23102018_Nuc_F1840_PD23_S40D4_CrosslinkReporterPeaks.txt", stringsAsFactors = FALSE, header = TRUE, sep = "\t")
+Rep2ReporterPeaks <- read.table("01052019_Nuc_F1840_PD23_S40D4_CrosslinkReporterPeaks.txt", stringsAsFactors = FALSE, header = TRUE, sep = "\t")
+XLINKSCORE = "40"
+DELTASCORE = "4"
+```
+
+
+```{r}
+clean_direction_Tara <- function( input_table, column_a, column_b) {
+  ncols <- ncol(input_table)
+	for (i in ncols) {
+	  input_table$Interaction <- if_else(column_a == column_b, paste(column_a, "(interacts with)", column_b), if_else(column_a < column_b, paste(column_a, "(interacts with)", column_b), paste(column_b, "(interacts with)", column_a)))
+	}
+	return(input_table)
+}
+
+CSMs <- bind_rows(Rep1, Rep2)
+
+CSMs <- CSMs %>%
+  filter(Is.Decoy == "False") %>% 
+  mutate(ProtPosA = paste(Protein.Accession.A,Leading.Protein.Position.A,"A", sep = "-")) %>%
+  mutate(ProtPosB = paste(Protein.Accession.B,Leading.Protein.Position.B,"B", sep = "-")) 
+
+#Key for merging PPIs and comparing to datasets - Unique protein protein pairs
+CSMs <- clean_direction_Tara(CSMs, CSMs$ProtPosA, CSMs$ProtPosB)
+
+#Splitting out ordered crosslinked peptides
+CSMs2 <-CSMs %>%
+  separate(Interaction, into= c("A","B","C","D"), sep = " ") %>% 
+  select(-B, -C) %>% 
+  separate(A, into = c("Protein1", "Lys1", "Order1"), sep = "-") %>% 
+  separate(D, into = c("Protein2", "Lys2", "Order2"), sep = "-") %>% 
+  mutate(ProtPosA = paste(Protein1,Lys1, sep = "-")) %>%
+  mutate(ProtPosB = paste(Protein2,Lys2, sep = "-")) 
+
+#Creating a new LysLysInteraction column for merging back into crosslinks
+CSMs2 <- clean_direction_Tara(CSMs2, CSMs2$ProtPosA, CSMs2$ProtPosB)
+CSMs <- CSMs2 %>% 
+  mutate(Desc1 = ifelse(Order1 == "A", Protein.Descriptions.A, Protein.Descriptions.B)) %>% 
+  mutate(Desc2 = ifelse(Order2 == "A", Protein.Descriptions.A, Protein.Descriptions.B)) %>% 
+  mutate(PepPos1 = ifelse(Order1 == "A", Crosslinker.Position.A, Crosslinker.Position.B)) %>% 
+  mutate(PepPos2 = ifelse(Order2 == "A", Crosslinker.Position.A, Crosslinker.Position.B)) %>% 
+  mutate(PepSeq1 = ifelse(Order1 == "A", Sequence.A, Sequence.B)) %>% 
+  mutate(PepSeq2 = ifelse(Order2 == "A", Sequence.A, Sequence.B)) %>% 
+  mutate(NumExplanationsProt1 = str_count(Desc1, ";") +1) %>% 
+  mutate(NumExplanationsProt2 = str_count(Desc2, ";") +1) %>% 
+  mutate(NumProteinExplanation = NumExplanationsProt1 + NumExplanationsProt2)
+
+#Import a manually annnotated database of histone and ribosome isoforms which define the A/1 isoform to overide other isoform name
+Ribo_database <- read.delim("Ribo_database.txt", stringsAsFactors=FALSE)
+Histone_isoforms <- read.delim("Histone_isoforms.txt", stringsAsFactors=FALSE)
+
+Ribo_database <- Ribo_database %>% 
+  rename(Protein1 = Accession) %>% 
+  rename(RiboIsoform1 = Leacing.Accesssion) %>% 
+  select(Protein1, RiboIsoform1, Identical) %>% 
+  rename(Identical1 = Identical) %>% 
+  mutate(isRiboIso1form1 = TRUE) %>% 
+  mutate(Identical1 = if_else(Identical1 == "diff", "DIFF", Identical1)) %>% 
+  mutate(Identical1 = if_else(Identical1 == "one", "ONE", Identical1))
+
+#joining the crosslink table with the ribosome isoform key  table for each protein within the crosslinks
+CSMs <- left_join(CSMs, Ribo_database)
+Ribo_database <- Ribo_database %>% 
+  rename(Protein2 = Protein1) %>% 
+  rename(RiboIsoform2 = RiboIsoform1) %>% 
+  rename(isRiboIso1form2 = isRiboIso1form1) %>% 
+  rename(Identical2 = Identical1) 
+
+CSMs <- left_join(CSMs, Ribo_database)
+
+#doing the same for histones
+Histone_isoforms <- Histone_isoforms %>% 
+  rename(Protein1 = Protein) %>% 
+  rename(HistoneIsoform1 = Leacing.Accesssion) %>% 
+  select(Protein1, HistoneIsoform1) %>% 
+  mutate(isHistoneIsoform1 = TRUE)
+
+CSMs <- left_join(CSMs, Histone_isoforms)
+Histone_isoforms <- Histone_isoforms %>% 
+  rename(Protein2 = Protein1) %>% 
+  rename(HistoneIsoform2 = HistoneIsoform1) %>% 
+  select(Protein2, HistoneIsoform2) %>% 
+  mutate(isHistoneIsoform2 = TRUE)
+CSMs <- left_join(CSMs, Histone_isoforms)
+
+#Generating a new name for the protein to account for yeast ribosomal protein uniqueness problem 
+#Yeast UNIPROT reference database has non-redundant sequences for many ribosomal proteins. Annoyingly, PD2.3 FASTA file import results in the throwing out of one of the redundant sequences, which often ends up being the A form --> B form poorly represened in databases. If ribosome isoforms are identical, force the name of the protein to be the A form. 
+#Protein Grouped isoforms (NumExplanationsProt1/2 == 2) were forced to be named the A form to remove redundacy for PPIs and node mapping in the network, as sometimes, XLinKX calls the B form the leading proteins and othertimes, the A form.
+#If the proteins had isoforms but could be unqiuely mapped to a specific isoform, this specific isoform was chosen to represent the crosslinked protein. 
+CSMs <- CSMs %>% 
+  mutate(Name.IsoformSummary.1 = case_when(((Identical1 == "TRUE") & (NumExplanationsProt1 == 1)) ~ RiboIsoform1,
+                                           ((Identical1 == "DIFF") & (NumExplanationsProt1 == 1)) ~ Protein1,
+                                           ((Identical1 == "DIFF") & (NumExplanationsProt1 == 2)) ~ RiboIsoform1,
+                                           ((Identical1 == "ONE") & (NumExplanationsProt1 == 1)) ~ Protein1,
+                                           ((isRiboIso1form1 == TRUE) & (NumExplanationsProt1 > 2)) ~ Protein1,
+                                           ((is.na(isRiboIso1form1)) & (is.na(isHistoneIsoform1))) ~ Protein1,
+                                           ((isHistoneIsoform1 == TRUE) & (NumExplanationsProt1 == 2)) ~ HistoneIsoform1,
+                                           ((isHistoneIsoform1 == TRUE) & (NumExplanationsProt1 == 1)) ~ Protein1,
+                                           ((isHistoneIsoform1 == TRUE) & (NumExplanationsProt1 > 2)) ~ Protein1)) %>% 
+  mutate(Name.IsoformSummary.2 = case_when(((Identical2 == "TRUE") & (NumExplanationsProt2 == 1)) ~ RiboIsoform2,
+                                           ((Identical2 == "DIFF") & (NumExplanationsProt2 == 1)) ~ Protein2,
+                                           ((Identical2 == "DIFF") & (NumExplanationsProt2 == 2)) ~ RiboIsoform2,
+                                           ((Identical2 == "ONE") & (NumExplanationsProt2 == 1)) ~ Protein2,
+                                           ((isRiboIso1form2 == TRUE) & (NumExplanationsProt2 > 2)) ~ Protein2,
+                                           ((is.na(isRiboIso1form2)) & (is.na(isHistoneIsoform2))) ~ Protein2,
+                                           ((isHistoneIsoform2 == TRUE) & (NumExplanationsProt2 == 2)) ~ HistoneIsoform2,
+                                           ((isHistoneIsoform2 == TRUE) & (NumExplanationsProt2 == 1)) ~ Protein2,
+                                           ((isHistoneIsoform2 == TRUE) & (NumExplanationsProt2 > 2)) ~ Protein2))
+                                           
+#creating a column to indiate the ambiguity (Unambiguous if only one protein explanation for the peptides, isoformed if A form forced, or ambiguous otherwise)
+CSMs <- CSMs %>% 
+  mutate(Ambiguity.1 = case_when(((Identical1 == "TRUE") & (NumExplanationsProt1 == 1)) ~ "Unambiguous",
+                                           ((Identical1 == "DIFF") & (NumExplanationsProt1 == 1)) ~ "Unambiguous",
+                                           ((Identical1 == "DIFF") & (NumExplanationsProt1 == 2)) ~ "Isoformed",
+                                           ((Identical1 == "ONE") & (NumExplanationsProt1 == 1)) ~ "Unambiguous",
+                                           ((isRiboIso1form1 == TRUE) & (NumExplanationsProt1 > 2)) ~ "Ambiguous",
+                                           ((isHistoneIsoform1 == TRUE) & (NumExplanationsProt1 == 2)) ~ "Isoformed",
+                                           ((isHistoneIsoform1 == TRUE) & (NumExplanationsProt1 == 1)) ~ "Unambiguous",
+                                           ((isHistoneIsoform1 == TRUE) & (NumExplanationsProt1 > 2)) ~ "Ambiguous")) %>%
+   mutate(Ambiguity.2 = case_when(((Identical2 == "TRUE") & (NumExplanationsProt2 == 1)) ~ "Unambiguous",
+                                           ((Identical2 == "DIFF") & (NumExplanationsProt2 == 1)) ~ "Unambiguous",
+                                           ((Identical2 == "DIFF") & (NumExplanationsProt2 == 2)) ~ "Isoformed",
+                                           ((Identical2 == "ONE") & (NumExplanationsProt2 == 1)) ~ "Unambiguous",
+                                           ((isRiboIso1form2 == TRUE) & (NumExplanationsProt2 > 2)) ~ "Ambiguous",
+                                           ((isHistoneIsoform2 == TRUE) & (NumExplanationsProt2 == 2)) ~ "Isoformed",
+                                           ((isHistoneIsoform2 == TRUE) & (NumExplanationsProt2 == 1)) ~ "Unambiguous",
+                                           ((isHistoneIsoform2 == TRUE) & (NumExplanationsProt2 > 2)) ~ "Ambiguous"))
+
+
+#indicating ambiguity for rest of the proteome.
+CSMs <- CSMs %>% 
+  mutate(Ambiguity.1 = if_else(((is.na(Ambiguity.1)) & (NumExplanationsProt1 == 1)), "Unambiguous", if_else(((is.na(Ambiguity.1)) & (NumExplanationsProt1 >= 2)), "Ambiguous", Ambiguity.1))) %>% 
+    mutate(Ambiguity.2 = if_else(((is.na(Ambiguity.2)) & (NumExplanationsProt2 == 1)), "Unambiguous", if_else(((is.na(Ambiguity.2)) & (NumExplanationsProt2 >= 2)), "Ambiguous", Ambiguity.2))) %>% 
+  replace(is.na(.), FALSE)
+
+
+
+```
+
+```{r}
+#Annotating the table of CSMs with the crosslink parent precurosr intensity, found in the reporter peaks file output from XlinkX
+#Creating a unique key with which to merge the XlinkX outputs
+CSMs <- CSMs %>%
+  mutate(SpecID = paste(First.Scan, "-", Spectrum.File))
+
+#combining the reporter peak tables from both replicates, and then generating the equivalent key to merge
+ReporterPeaks <- bind_rows(Rep1ReporterPeaks, Rep2ReporterPeaks)
+ReporterPeaks <- ReporterPeaks %>%
+  mutate(SpecID = paste(Pre.Scan.Number, "-", Spectrum.File.Path)) %>%
+  select(SpecID, Intensity)
+
+CSMs$SpecID <- as.character(CSMs$SpecID)
+ReporterPeaks$SpecID <- as.character(ReporterPeaks$SpecID )
+
+#merging tables
+CSMs <- distinct(left_join(CSMs, ReporterPeaks))
+```
+
+
+```{r}
+#removing CSMs annotated as interlinks that were more likely intralinks
+InterCSMs <- CSMs %>%
+  filter(Name.IsoformSummary.1 != Name.IsoformSummary.2) %>% 
+  mutate(LikelyBetterExplainedAsIntra = case_when(((str_detect(Desc1, fixed(Desc2)) | (str_detect(Desc2, fixed(Desc1))) ~ TRUE)))) 
+
+InterCSMs <- InterCSMs %>% 
+  replace(is.na(.), FALSE)
+
+#filtering for only isoformed or umabiguous crosslinks
+UniqueOrManuallyAssignedInter <- InterCSMs %>% 
+  filter(Ambiguity.1 %in% c("Unambiguous", "Isoformed")) %>% 
+  filter(Ambiguity.2 %in% c("Unambiguous", "Isoformed")) %>% 
+  filter(LikelyBetterExplainedAsIntra == FALSE)
+
+clean_direction_Tara <- function( input_table, column_a, column_b) {
+  ncols <- ncol(input_table)
+	for (i in ncols) {
+	  input_table$Interaction <- if_else(column_a == column_b, paste(column_a, "(interacts with)", column_b), if_else(column_a < column_b, paste(column_a, "(interacts with)", column_b), paste(column_b, "(interacts with)", column_a)))
+	}
+	return(input_table)
+}
+#Naming the protein interaction key using the isoformed names so that it can be compared to PPI databases
+UniqueOrManuallyAssignedInter <- clean_direction_Tara(UniqueOrManuallyAssignedInter, UniqueOrManuallyAssignedInter$Name.IsoformSummary.1, UniqueOrManuallyAssignedInter$Name.IsoformSummary.2)
+UniqueOrManuallyAssignedInter <- UniqueOrManuallyAssignedInter %>% 
+  rename(ProteinInteraction = Interaction)
+```
+
+```{r}
+#Import interaction databases
+INTERACTOME3D <- read.delim("interactions.dat", stringsAsFactors=FALSE)
+STRING <- read.csv("STRINGCytoscapeApril2019.csv", stringsAsFactors=FALSE)
+BIOGRID <- read.csv("BIOGRID_succinct_withgenetic.csv", stringsAsFactors=FALSE)
+APID <- read.delim("559292_noISI_Q3_June2019.txt", stringsAsFactors=FALSE)
+
+APID <- clean_direction_Tara(APID, APID$UniprotID_A, APID$UniprotID_B)
+  
+#Make databases ready for merging
+STRING <- STRING %>%
+  select(-InteractionReverse) %>%
+  dplyr::rename(ProteinInteraction = Interaction)
+BIOGRID <- BIOGRID %>%
+  select(-c(InteractionReverse , AccessionA, AccessionB)) %>%
+  dplyr::rename(ProteinInteraction = Interaction)
+APID <- APID %>% 
+  filter(ExpEvidences >= 1) %>% 
+  rename(ProteinInteraction = Interaction) %>% 
+  mutate(KnownAPID = TRUE)
+INTERACTOME3D <- INTERACTOME3D %>% 
+  filter(TYPE == "Structure") %>% 
+  select(PROT1, PROT2, TYPE)
+INTERACTOME3D <- clean_direction_Tara(INTERACTOME3D, INTERACTOME3D$PROT1, INTERACTOME3D$PROT2)
+INTERACTOME3D <- INTERACTOME3D %>% 
+  rename(ProteinInteraction = Interaction) %>% 
+  select(ProteinInteraction, TYPE) %>% 
+  distinct()
+
+#joining databases to the dataset by the ProteinInteraction key
+UniqueOrManuallyAssignedInter <- left_join(UniqueOrManuallyAssignedInter, APID)
+UniqueOrManuallyAssignedInter <- left_join(UniqueOrManuallyAssignedInter, STRING)
+UniqueOrManuallyAssignedInter <- left_join(UniqueOrManuallyAssignedInter, BIOGRID)
+UniqueOrManuallyAssignedInter <- left_join(UniqueOrManuallyAssignedInter, INTERACTOME3D)
+UniqueOrManuallyAssignedInter <- UniqueOrManuallyAssignedInter %>%
+  replace(is.na(.), FALSE)
+
+#assigning PPI novelty based on if it is known (structural - INTERACTOME3D or physical - APID) or novel (anything else)
+UniqueOrManuallyAssignedInter$PPINovelty <- if_else(UniqueOrManuallyAssignedInter$KnownAPID, UniqueOrManuallyAssignedInter$PPINovelty <- "Known", if_else(UniqueOrManuallyAssignedInter$TYPE == "Structure", UniqueOrManuallyAssignedInter$PPINovelty <- "Known", UniqueOrManuallyAssignedInter$PPINovelty <- "Novel"))
+
+#assigning PPI strongest evidence in order of Structural information in Interactome3D, physical interaction evidence from APID, STRING prediction if the combined score for the PPI was above 400 (medium confidence as reported on the STRING website), Genetic if it was present as a genetic interaction in BIOGRID and unexplained otherwise
+UniqueOrManuallyAssignedInter$PPIEvidenceInfoGroup <- if_else(UniqueOrManuallyAssignedInter$TYPE == "Structure", UniqueOrManuallyAssignedInter$PPIEvidenceInfoGroup <- "Structure", if_else(UniqueOrManuallyAssignedInter$KnownAPID == TRUE, UniqueOrManuallyAssignedInter$PPIEvidenceInfoGroup <- "APID", if_else(UniqueOrManuallyAssignedInter$combined_score > 400, UniqueOrManuallyAssignedInter$PPIEvidenceInfoGroup <- "STRING", if_else(UniqueOrManuallyAssignedInter$KnownGeneticBIOGRID, UniqueOrManuallyAssignedInter$PPIEvidenceInfoGroup <- "Genetic", UniqueOrManuallyAssignedInter$PPIEvidenceInfoGroup <- "Unexplained"))))
+
+#noting crosslink type - intra or inter and overiding PPI evidence with "Intra" if it is an intra
+UniqueOrManuallyAssignedInter <- UniqueOrManuallyAssignedInter %>% 
+  mutate(Crosslink.Type = if_else(Name.IsoformSummary.1 == Name.IsoformSummary.2, "Intra", "Inter")) %>% 
+  mutate(PPIEvidenceInfoGroup = if_else(Crosslink.Type == "Intra", "Intra", PPIEvidenceInfoGroup)) %>% 
+  mutate(PPINovelty = if_else(Crosslink.Type == "Intra", "Intra", PPINovelty))
+  
+#Generating a new protein-lysine key for summarising to unqiue lysine-lysine contacts
+UniqueOrManuallyAssignedInter <- UniqueOrManuallyAssignedInter %>% 
+  mutate(ProtPosA = paste(Name.IsoformSummary.1,Lys1, sep = "-")) %>% 
+  mutate(ProtPosB = paste(Name.IsoformSummary.2,Lys2, sep = "-"))
+  UniqueOrManuallyAssignedInter <- clean_direction_Tara(UniqueOrManuallyAssignedInter, UniqueOrManuallyAssignedInter$ProtPosA, UniqueOrManuallyAssignedInter$ProtPosB)
+UniqueOrManuallyAssignedInter <- UniqueOrManuallyAssignedInter %>% 
+  rename(LysLysInteraction = Interaction)
+```
+
+
+#values for panel A: the URP piechart of PPI evidence type
+```{r}
+UniqueOrManuallyAssignedInterURP <- UniqueOrManuallyAssignedInter %>% 
+  select(LysLysInteraction, ProteinInteraction, PPINovelty, PPIEvidenceInfoGroup) %>% 
+  distinct()
+
+print(paste("Number of URPs representing interactions in structures (interactome3D): ", NROW(which(UniqueOrManuallyAssignedInterURP$PPIEvidenceInfoGroup == "Structure"))))
+print(paste("Number of URPs representing interactions in phsyical (APID): ", NROW(which(UniqueOrManuallyAssignedInterURP$PPIEvidenceInfoGroup == "APID"))))
+print(paste("Number of URPs representing interactions predicted by STRING: ", NROW(which(UniqueOrManuallyAssignedInterURP$PPIEvidenceInfoGroup == "STRING"))))
+print(paste("Number of URPs representing interactions predicted a genetic interactions (BIOGRID): ", NROW(which(UniqueOrManuallyAssignedInterURP$PPIEvidenceInfoGroup == "Genetic"))))
+print(paste("Number of URPs representing interactions otherwsie unexplained: ", NROW(which(UniqueOrManuallyAssignedInterURP$PPIEvidenceInfoGroup == "Unexplained"))))
+```
+
+```{r}
+UniqueOrManuallyAssignedIntra <- CSMs %>%
+  filter(Ambiguity.1 %in% c("Unambiguous", "Isoformed")) %>% 
+  filter(Ambiguity.2 %in% c("Unambiguous", "Isoformed")) %>% 
+  filter(Protein.Accession.A == Protein.Accession.B)
+
+write.table(UniqueOrManuallyAssignedIntra, "IntraCSMS.txt", sep = "\t", row.names = FALSE, quote = FALSE)
+write.table(UniqueOrManuallyAssignedInter, "InterCSMS.txt", sep = "\t", row.names = FALSE, quote = FALSE)
+
+
+wilcox.test(UniqueOrManuallyAssignedIntra$Intensity, UniqueOrManuallyAssignedInter$Intensity)
+wilcox.test(UniqueOrManuallyAssignedIntra$XlinkX.Score, UniqueOrManuallyAssignedInter$XlinkX.Score)
+wilcox.test(UniqueOrManuallyAssignedIntra$Delta..XlinkX.Score, UniqueOrManuallyAssignedInter$Delta..XlinkX.Score)
+  
+```
+```{r}
+Structure <- UniqueOrManuallyAssignedInter %>% 
+  filter(PPIEvidenceInfoGroup == "Structure")
+APID <- UniqueOrManuallyAssignedInter %>% 
+  filter(PPIEvidenceInfoGroup == "APID")
+STRING <- UniqueOrManuallyAssignedInter %>% 
+  filter(PPIEvidenceInfoGroup == "STRING")
+Genetic <- UniqueOrManuallyAssignedInter %>% 
+  filter(PPIEvidenceInfoGroup == "Genetic")
+Unexplained <- UniqueOrManuallyAssignedInter %>% 
+  filter(PPIEvidenceInfoGroup == "Unexplained")
+
+write.table(Structure, "Structure_InterCSMS.txt", sep = "\t", row.names = FALSE, quote = FALSE)
+write.table(APID, "APID_InterCSMS.txt", sep = "\t", row.names = FALSE, quote = FALSE)
+write.table(STRING, "STRING_InterCSMS.txt", sep = "\t", row.names = FALSE, quote = FALSE)
+write.table(Genetic, "Genetic_InterCSMS.txt", sep = "\t", row.names = FALSE, quote = FALSE)
+write.table(Unexplained, "Unexplained_InterCSMS.txt", sep = "\t", row.names = FALSE, quote = FALSE)
+
+
+wilcox.test(Structure$Intensity, Unexplained$Intensity)
+wilcox.test(APID$Intensity, Unexplained$Intensity)
+wilcox.test(STRING$Intensity, Unexplained$Intensity)
+wilcox.test(Genetic$Intensity, Unexplained$Intensity)
+```
+
+```{r}
+A <- NROW(UniqueOrManuallyAssignedInterURP)
+B <- NROW(which((UniqueOrManuallyAssignedInterURP$PPIEvidenceInfoGroup == "Structure" | UniqueOrManuallyAssignedInterURP$PPIEvidenceInfoGroup == "APID")))
+
+B/A
+```
+
+```{r}
+wilcox.test(Structure$XlinkX.Score, Unexplained$XlinkX.Score)
+wilcox.test(APID$XlinkX.Score, Unexplained$XlinkX.Score)
+wilcox.test(STRING$XlinkX.Score, Unexplained$XlinkX.Score)
+wilcox.test(Genetic$XlinkX.Score, Unexplained$XlinkX.Score)
+```
+```{r}
+PPIs <- UniqueOrManuallyAssignedInterURP %>% 
+  select(ProteinInteraction, PPINovelty, PPIEvidenceInfoGroup) %>% 
+  distinct()
+```
+
+
+
+```{r}
+wilcox.test(Structure$Delta..XlinkX.Score, Unexplained$Delta..XlinkX.Score)
+wilcox.test(APID$Delta..XlinkX.Score, Unexplained$Delta..XlinkX.Score)
+wilcox.test(STRING$Delta..XlinkX.Score, Unexplained$Delta..XlinkX.Score)
+wilcox.test(Genetic$Delta..XlinkX.Score, Unexplained$Delta..XlinkX.Score)
+```
+
+```{r}
+Known <- UniqueOrManuallyAssignedInter %>% 
+  filter(PPINovelty == "Known")
+Novel <- UniqueOrManuallyAssignedInter %>% 
+  filter(PPINovelty == "Novel")
+
+write.table(Known, "Known_InterCSMS.txt", sep = "\t", row.names = FALSE, quote = FALSE)
+write.table(Novel, "Novel_InterCSMS.txt", sep = "\t", row.names = FALSE, quote = FALSE)
+
+wilcox.test(Known$Intensity, Novel$Intensity)
+wilcox.test(Known$Delta..XlinkX.Score, Novel$Delta..XlinkX.Score)
+wilcox.test(Known$XlinkX.Score, Novel$XlinkX.Score)
+```
+
+
+
+
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Cmd+Option+I*.
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Cmd+Shift+K* to preview the HTML file). 
+
+The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.
+
