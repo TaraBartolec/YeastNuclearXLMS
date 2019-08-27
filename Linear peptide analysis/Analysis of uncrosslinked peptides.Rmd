@@ -1,0 +1,89 @@
+---
+title: "R Notebook"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+```{r}
+library(tidyverse)
+```
+
+Data for figure two, XL-MS overview
+```{r}
+StandardProteomicsSearch_23102018_Proteins <- read.delim("StandardProteomicsSearch_23102018_correctPPM_Proteins.txt", stringsAsFactors=FALSE)
+StandardProteomicsSearch_01052019_Proteins <- read.delim("StandardProteomicsSearch_01052019_correctPPM_Proteins.txt", stringsAsFactors=FALSE)
+StandardProteomicsSearch_23102018_Peptides <- read.delim("StandardProteomicsSearch_23102018_correctPPM_PeptideGroups.txt", stringsAsFactors=FALSE)
+StandardProteomicsSearch_01052019_Peptides <- read.delim("StandardProteomicsSearch_01052019_correctPPM_PeptideGroups.txt", stringsAsFactors=FALSE)
+
+
+Filtered_23102018 <- StandardProteomicsSearch_23102018_Proteins %>% 
+  filter(Master == "IsMasterProtein") %>% 
+  filter(Number.of.Unique.Peptides >= 2) %>% 
+  filter(Protein.FDR.Confidence.Combined == "High") %>% 
+  select(Accession) 
+
+Filtered_01052019 <- StandardProteomicsSearch_01052019_Proteins %>% 
+  filter(Master == "IsMasterProtein") %>% 
+  filter(Number.of.Unique.Peptides >= 2) %>% 
+    filter(Protein.FDR.Confidence.Combined == "High") %>% 
+    select(Accession) 
+
+AllLinearProteins <- distinct(bind_rows(Filtered_23102018, Filtered_01052019))
+OverlapLinearProteins <- distinct(inner_join(Filtered_23102018, Filtered_01052019))
+
+UNIPROT_Nuclear <- read.delim("UNIPROT_Nuclear_Nucleolar_snoRNP.txt", stringsAsFactors=FALSE)
+
+nucproteins <- UNIPROT_Nuclear %>%
+  select(Entry,NuclearANy)
+colnames(nucproteins) <- c("Accession", "isNuclear")
+
+AllLinearProteins <- left_join(AllLinearProteins, nucproteins)
+OverlapLinearProteins <- left_join(OverlapLinearProteins, nucproteins)
+
+OverlapLinearProteins <- OverlapLinearProteins %>% 
+  mutate(High.Confidence.Both.Replicates = TRUE)
+
+AllLinearProteins <- left_join(AllLinearProteins, OverlapLinearProteins)
+AllLinearProteins <- AllLinearProteins %>% 
+  replace(is.na(.), FALSE)
+
+write.table(AllLinearProteins, "AllLinearProteins.txt", row.names = FALSE, sep ="\t")
+
+print(paste("Number of peptide group IDs in Replicate 1: ", NROW(StandardProteomicsSearch_23102018_Peptides)))
+print(paste("Number of peptide group IDs in Replicate 2: ", NROW(StandardProteomicsSearch_01052019_Peptides)))
+print(paste("Number of confident protein IDs in Replicate 1: ", NROW(Filtered_23102018)))
+print(paste("Number of confident protein IDs in Replicate 2: ", NROW(Filtered_01052019)))
+print(paste("Number of confident protein IDs in union: ", NROW(AllLinearProteins)))
+print(paste("Number of confident protein IDs in in overlap: ", NROW(OverlapLinearProteins)))
+print(paste("Percentage confident protein ID overlap = ", 100*(NROW(OverlapLinearProteins)/NROW(AllLinearProteins)), "%"))
+```
+
+Comparing nuclear proteome coverage to Gauci and Mosley Studies
+```{r}
+Gauci <- read.delim2("pr9000948_si_007 (2).txt", stringsAsFactors=FALSE)
+Mosley <- read.csv("Copy of MosleySuppTable1.txt", sep="", stringsAsFactors=FALSE)
+
+Gauci <- Gauci %>% 
+  select(Protein.accession.number) %>% 
+  rename(OrdLocus = Protein.accession.number)
+
+Mosley <- Mosley %>% 
+   rename(OrdLocus = YID)
+
+nucproteins <- UNIPROT_Nuclear %>%
+  select(Entry, Gene.names...ordered.locus.., NuclearANy) %>% 
+  rename(OrdLocus = Gene.names...ordered.locus.. )
+
+Gauci_annotated <- left_join(Gauci, nucproteins)
+Mosley_annotated <- left_join(Mosley, nucproteins)
+```
+
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Cmd+Option+I*.
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Cmd+Shift+K* to preview the HTML file). 
+
+The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.
+
