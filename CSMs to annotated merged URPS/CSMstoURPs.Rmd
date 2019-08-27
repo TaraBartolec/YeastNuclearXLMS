@@ -1,0 +1,239 @@
+---
+title: "R Notebook"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+```{r}
+library(tidyverse)
+```
+
+Data for figure two, XL-MS overview
+```{r}
+Rep1 <- read.delim("23102018_Nuc_F1840_PD23_S40D4_CSMs.txt", stringsAsFactors=FALSE)
+Rep1ReporterPeaks <- read.delim("23102018_Nuc_F1840_PD23_S40D4_CrosslinkReporterPeaks.txt", stringsAsFactors=FALSE)
+
+Rep2 <- read.delim("01052019_Nuc_F1840_PD23_S40D4_CSMs.txt", stringsAsFactors=FALSE)
+Rep2ReporterPeaks <- read.delim("01052019_Nuc_F1840_PD23_S40D4_CrosslinkReporterPeaks.txt", stringsAsFactors=FALSE)
+
+
+Name= "YeastNuclei"
+PDVersion = "2.3"
+DeltaScore = "4"
+XlinkXScore = "40"
+```
+
+
+```{r}
+#noting which replicate the CSM originated from
+Rep1 <- Rep1 %>% 
+  mutate(inRep1 = 1)
+Rep2 <- Rep2 %>% 
+  mutate(inRep2 = 1)
+
+#binding the CSM identifications from the replicates
+CSMs <- bind_rows(Rep1, Rep2)
+write.table(CSMs, "CSMs_Total.txt", row.names = FALSE, sep = "\t")
+
+#function to alphabetise and concatentate two columns. can be used to create a uniform PPI key or lysine-lysine link (CSM to unique residue pair URP)
+clean_direction_Tara <- function( input_table, column_a, column_b) {
+  ncols <- ncol(input_table)
+	for (i in ncols) {
+	  input_table$Interaction <- if_else(column_a == column_b, paste(column_a, "(interacts with)", column_b), if_else(column_a < column_b, paste(column_a, "(interacts with)", column_b), paste(column_b, "(interacts with)", column_a)))
+	}
+	return(input_table)
+}
+
+#Filtering out decoys and creatign Crosslinked Lys Key, with addition information about the original order of Protein Description in xlinkx file
+CSMs <- CSMs %>%
+  filter(Is.Decoy == "False") %>% 
+  mutate(ProtPosOrderA = paste(Protein.Accession.A,Leading.Protein.Position.A,"A", sep = "-")) %>%
+  mutate(ProtPosOrderB = paste(Protein.Accession.B,Leading.Protein.Position.B,"B", sep = "-"))
+
+#Key for merging PPIs and comparing to datasets - Unique protein protein pairs
+CSMs <- clean_direction_Tara(CSMs, CSMs$ProtPosOrderA, CSMs$ProtPosOrderB)
+
+CSMs2 <-CSMs %>%
+  separate(Interaction, into= c("A","B","C","D"), sep = " ") %>% 
+  select(-B, -C) %>% 
+  separate(A, into = c("Protein1", "Lys1", "Order1"), sep = "-") %>% 
+  separate(D, into = c("Protein2", "Lys2", "Order2"), sep = "-") %>% 
+  mutate(ProtPosA = paste(Protein1,Lys1, sep = "-")) %>%
+  mutate(ProtPosB = paste(Protein2,Lys2, sep = "-")) 
+
+#Creating a new LysLysInteraction column for merging back into crosslinks
+CSMs2 <- clean_direction_Tara(CSMs2, CSMs2$ProtPosA, CSMs2$ProtPosB)
+
+#Creating a table of Protein Desriptions summarised at the crosslink level
+#Ordering the Descriptions to match with the correctly ordered peptides
+#summarising the number of protein explanations for each crosslinked protein, if there are mutliple protein explanations, taking the one with the least Number of protein explanations (more succinctly summarising the lys-lys position)
+TableofProteinDescCSMs <- CSMs2 %>% 
+  rename(LysLysInteraction = Interaction) %>% 
+  mutate(Desc.1 = ifelse(Order1 == "A", Protein.Descriptions.A, Protein.Descriptions.B)) %>% 
+  mutate(Desc.2 = ifelse(Order2 == "A", Protein.Descriptions.A, Protein.Descriptions.B)) %>% 
+  mutate(PepPos1 = ifelse(Order1 == "A", Crosslinker.Position.A, Crosslinker.Position.B)) %>% 
+  mutate(PepPos2 = ifelse(Order2 == "A", Crosslinker.Position.A, Crosslinker.Position.B)) %>% 
+  mutate(PepSeq1 = ifelse(Order1 == "A", Sequence.A, Sequence.B)) %>% 
+  mutate(PepSeq2 = ifelse(Order2 == "A", Sequence.A, Sequence.B)) %>% 
+  mutate(Num.Explanations.Prot1 = str_count(Desc.1, ";") +1) %>% 
+  mutate(Num.Explanations.Prot2 = str_count(Desc.2, ";") +1) %>% 
+  mutate(TotalNum.Explanations.XL = Num.Explanations.Prot2 + Num.Explanations.Prot2)
+
+#Making a summarised table of unique residues pairs from the union of replciates, using the leading protein ID reported by XlinkX
+URPsFromXlinkXLeadingProtein <- TableofProteinDescCSMs %>% 
+  select(Crosslink.Type, Protein1, Protein2, Lys1, Lys2, Num.Explanations.Prot1, Num.Explanations.Prot2, TotalNum.Explanations.XL, Desc.1, Desc.2, Crosslink.localisation.probability, XlinkX.Score, Delta..XlinkX.Score, PepSeq1, PepPos1, PepSeq2, PepPos2,LysLysInteraction) %>% 
+  group_by(LysLysInteraction) %>% 
+  add_tally() %>% 
+  top_n(1, XlinkX.Score) %>% 
+  top_n(1, Delta..XlinkX.Score) %>% 
+  top_n(1, Crosslink.localisation.probability) %>% 
+  ungroup() %>% 
+  distinct() %>% 
+  rename(Lysine.1 = Lys1) %>% 
+  rename(Lysine.2 = Lys2) %>% 
+  rename(Num.CSMs = n) %>% 
+  rename(MAX.XlinkX.Score = XlinkX.Score) %>% 
+  rename(Pep.Seq.1 = PepSeq1) %>% 
+  rename(Pep.Seq.2 = PepSeq2) %>% 
+  rename(Pep.Pos.1 = PepPos1) %>% 
+  rename(Pep.Pos.2 = PepPos2) %>% 
+  rename(MAX.Delta.Score  = Delta..XlinkX.Score) %>% 
+  rename(MAX.Crosslink.localisation.probability  =  Crosslink.localisation.probability) %>% 
+  rename(Leading.Accession.1 = Protein1) %>% 
+  rename(Leading.Accession.2 = Protein2)
+
+#Annotated the replicate status of URPs
+URPs <- TableofProteinDescCSMs %>% 
+  select(Crosslink.Type, LysLysInteraction, inRep1, inRep2, Protein1, Protein2) %>% 
+  distinct()
+URPsRep1<- URPs %>% 
+  filter(inRep1 == 1) %>% 
+  select(LysLysInteraction, Crosslink.Type, inRep1) %>% 
+  distinct()
+URPsRep2 <- URPs %>% 
+  filter(inRep2 == 1) %>% 
+  select(LysLysInteraction, Crosslink.Type, inRep2) %>% 
+  distinct()
+RepStat <- full_join(URPsRep1, URPsRep2, by = "LysLysInteraction")
+RepStat <- RepStat %>% 
+  replace(is.na(.), 0) %>% 
+  mutate(Num.Replicates = inRep1 + inRep2) %>% 
+  select(Num.Replicates, LysLysInteraction)
+URPsFromXlinkXLeadingProtein <- left_join(URPsFromXlinkXLeadingProtein, RepStat)
+
+write.table(URPsFromXlinkXLeadingProtein, file = "Union_URPs_Score40Delta4_XlinkXLeadingAccessions.txt", sep ="\t", row.names = FALSE)
+```
+
+
+```{r}
+#Determing dataset of URPs found in boith replicates
+URPsRep1<- URPsRep1 %>% 
+  select(LysLysInteraction, Crosslink.Type) %>% 
+  distinct()
+URPsRep2 <- URPsRep2 %>% 
+  select(LysLysInteraction, Crosslink.Type) %>% 
+  distinct()
+
+OverlapURPs <- distinct(inner_join(URPsRep1, URPsRep2))
+AllURPs<- URPs %>% 
+  select(Crosslink.Type, LysLysInteraction, Protein1, Protein2) %>% 
+  distinct()
+```
+
+Values for panel A - Reporter peaks to CSMs to URPs
+```{r}
+print(paste("Reporter peaks in Replicate 1: ", NROW(Rep1ReporterPeaks)))
+print(paste("Non-Decoy CSMs in Replicate 1: ", NROW(which(Rep1$Is.Decoy == "False"))))
+print(paste("Number of Unique Residue Pairs in Replicate 1: ", NROW(URPsRep1)))
+print(paste("Reporter peaks in Replicate 2: ", NROW(Rep2ReporterPeaks)))
+print(paste("Non-Decoy CSMs in Replicate 2: ", NROW(which(Rep2$Is.Decoy == "False"))))
+print(paste("Number of Unique Residue Pairs in Replicate 2: ", NROW(URPsRep2)))
+```
+
+Values for panel B - Number of URPS per dataset/union/overlaps by crosslink type
+```{r}
+print("REPLICATE 1")
+print(paste("Number of Unique Residue Pairs (intra-links) in Replicate 1: ", NROW(which(URPsRep1$Crosslink.Type == "Intra"))))
+print(paste("Number of Unique Residue Pairs (inter-links) in Replicate 1: ", NROW(which(URPsRep1$Crosslink.Type == "Inter"))))
+print("REPLICATE 2")
+
+print(paste("Number of Unique Residue Pairs (intra-links) in Replicate 2: ", NROW(which(URPsRep2$Crosslink.Type == "Intra"))))
+print(paste("Number of Unique Residue Pairs (inter-links) in Replicate 1: ", NROW(which(URPsRep2$Crosslink.Type == "Inter"))))
+print("UNION")
+print(paste("Total Number of Unique Residue Pairs across replicates: ", NROW(AllURPs)))
+print(paste("Total Number of Unique Residue Pairs (intra-links) across replicates: ", NROW(which(AllURPs$Crosslink.Type == "Intra"))))
+print(paste("Total Number of Unique Residue Pairs (inter-links) across replicates: ", NROW(which(AllURPs$Crosslink.Type == "Inter"))))
+print("OVERLAP")
+print(paste("Total Number of Unique Residue Pairs across replicates: ", NROW(OverlapURPs)))
+print(paste("Total Number of Unique Residue Pairs (intra-links) across replicates: ", NROW(which(OverlapURPs$Crosslink.Type == "Intra"))))
+print(paste("Total Number of Unique Residue Pairs (inter-links) across replicates: ", NROW(which(OverlapURPs$Crosslink.Type == "Inter"))))
+```
+
+Values for panel C - URP overlap percentage
+```{r}
+print(paste("Total Number of Unique Residue Pairs across replicates: ", NROW(AllURPs)))
+print(paste("Number of Unique Residue Pairs detected in both replicates: ", NROW(OverlapURPs)))
+print(paste("Percentage overlap of URP identifications across replicates", 100*(NROW(OverlapURPs)/NROW(AllURPs)), "%"))
+```
+
+```{r}
+#Annotating the nuclear proteins within crosslinks
+UNIPROT_Nuclear <- read.delim("UNIPROT_Nuclear_Nucleolar_snoRNP.txt", stringsAsFactors=FALSE)
+nucproteins <- UNIPROT_Nuclear %>%
+  select(Entry,NuclearANy)
+colnames(nucproteins) <- c("Protein1", "isNuclear1")
+AllURPs <- left_join(AllURPs, nucproteins)
+
+colnames(nucproteins) <- c("Protein2", "isNuclear2")
+AllURPs <- left_join(AllURPs, nucproteins)
+
+
+#create factors that describe the crosslink localisation status
+AllURPs$SubCellLoc <- if_else((AllURPs$isNuclear1 == TRUE & AllURPs$isNuclear2 == TRUE), AllURPs$SubCellLoc <- "NuclearToNuclear", if_else((AllURPs$isNuclear1 == TRUE & AllURPs$isNuclear2 == FALSE), AllURPs$SubCellLoc <- "NuclearToOther", if_else((AllURPs$isNuclear1 == FALSE & AllURPs$isNuclear2 == TRUE), AllURPs$SubCellLoc <- "NuclearToOther", "OtherToOther")))
+
+AllURPs$SubCellLoc <- factor(AllURPs$SubCellLoc,levels = c("NuclearToNuclear", "NuclearToOther", "OtherToOther"))
+```
+
+
+
+Values for panel E - Subcellular localisation of proteins (from linear peptides) and crosslinked proteins
+```{r}
+XLdProteins1 <- AllURPs %>% 
+  select(Protein1, isNuclear1) %>%
+  distinct() %>% 
+  rename(Protein = Protein1) %>% 
+  rename(isNuclear = isNuclear1)
+
+XLdProteins2 <- AllURPs %>% 
+  select(Protein2, isNuclear2) %>%
+  distinct() %>% 
+  rename(Protein = Protein2) %>% 
+  rename(isNuclear = isNuclear2)
+
+
+XLdProteins <- distinct(bind_rows(XLdProteins1, XLdProteins2))
+
+print(paste("Number of crosslinked proteins = ", NROW(XLdProteins$isNuclear == TRUE)))
+print(paste("Number of crosslinked nuclear proteins = ", NROW(which(XLdProteins$isNuclear == TRUE))))
+print(paste("Number of crosslinked non-nuclear proteins = ", NROW(which(XLdProteins$isNuclear == FALSE))))
+print(paste("Percentage crosslinked proteins that are nuclear = ", 100*(NROW(which(XLdProteins$isNuclear == TRUE))/NROW(XLdProteins)), "%"))
+```
+
+Values for panel F - subcellular localisations of interlinks
+```{r}
+InterURPs <- AllURPs %>% 
+  filter(Crosslink.Type == "Inter")
+NROW(which(InterURPs$SubCellLoc == "NuclearToNuclear"))
+NROW(which(InterURPs$SubCellLoc == "NuclearToOther"))
+NROW(which(InterURPs$SubCellLoc == "OtherToOther"))
+```
+
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Cmd+Option+I*.
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Cmd+Shift+K* to preview the HTML file). 
+
+The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.
+
